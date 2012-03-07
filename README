@@ -1,0 +1,20 @@
+Poincare is a Haskell package to generate Poincare disk tilings as SVG.
+
+Currently the code base includes two files: 
+SVG.hs      -- a collection of Haskell data types building a DSL for a 
+               sub-language of SVG, uses Show instances to actually output 
+               correct SQL for the expressions available.
+Poincare.hs -- a file implementing hyperbolic geometry primitives and a 
+               reflections-based approach to generating regular and 
+               quasi-regular tilings of the Poincare disk using Schlaefli 
+               symbols of type {p,q}.
+
+Some usage examples are included at the very end of Poincare.hs.
+
+This is utterly unpolished code, and not yet ready for e.g. Hackage publication. 
+Furthermore, this does none of the group theory that would be appropriate
+to reduce double work in the tiling generation -- instead of generating a tree
+covering the Cayley graph of the corresponding symmetry group, this code just 
+recursively moves in all directions available at any given moment.
+
+Future plans include some computational group theory to fix this issue.
