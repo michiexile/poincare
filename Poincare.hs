@@ -13,6 +13,8 @@ import Data.Map ((!), Map)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Set (Set)
+import qualified Data.Sequence as Seq
+import Data.Sequence (Seq, (<|), (|>), (><), ViewL (..), ViewR (..))
 
 type Point = (Double, Double)
 type Line = (Point, Point)
@@ -277,53 +279,6 @@ schwarzQuasiPolygon p q = [(s*(cos ((3+2*i)*angleA)), s*(sin ((3+2*i)*angleA))) 
 edges p [] = []
 edges p (q:ps) = (p,q):(edges q ps)
 
-tileTriangleStep :: [PPolygon] -> [(PPoint, PLine, Int)] -> [PPolygon]
-tileTriangleStep polys [] = polys
-tileTriangleStep polys ((_,_,0):reflects) = 
-    tileTriangleStep polys reflects
-tileTriangleStep polys ((p,l@(q,r),n):reflects) = 
-    tileTriangleStep newpolys newreflects
-        where
-          p' = reflectPPoint l p
-          newpolys = [p',q,r,p']:polys
-          newreflects = reflects ++ [(q,(p',r),n-1),(r,(p',q),n-1)]
-
-tilePolygonStep :: [PPolygon] -> [(PPolygon, PLine, Int)] -> [PPolygon]
-tilePolygonStep polys [] = polys
-tilePolygonStep polys ((_,_,0):reflects) = 
-    tilePolygonStep polys reflects
-tilePolygonStep polys ((poly, line, n):reflects) = 
-    tilePolygonStep (newpoly:polys)
-                    (reflects ++ newreflect)
-        where
-          newpoly = map (reflectPPoint line) poly
-          newlines = nub $ filter (/= line) (edges (head newpoly) (tail newpoly))
-          newreflect = map (\l -> (newpoly, l, n-1)) newlines
-
-tileStep :: Map PLine (PPolygon, Int, Bool) -> (PPolygon -> Bool -> SVGElement) -> [SVGElement]
-tileStep tasks f | Map.null tasks = [unitCircleSVG [emptyStyle]]
-                 | otherwise = (f prepoly side) : (tileStep newtasks f)
-    where
-      ((line, (prepoly, n, side)), interimtasks) = Map.deleteFindMax tasks
-      poly = map (reflectPPoint line) prepoly
-      news | n == 0 = []
-           | otherwise = [(poly, n-1, not side)]
-      newEdges = filter (\((x1,y1),(x2,y2)) -> sqrt (x1^2+y1^2) < 0.999 && sqrt (x2^2+y2^2) < 0.999)
-                 (edges (head poly) (tail poly))
-      newtasks = Map.union interimtasks (Map.fromList [(l, nw) | l <- newEdges, nw <- news])
-
-tileQuasiStep :: Map PPoint (PPolygon, Int, Bool) -> (PPolygon -> Bool -> SVGElement) -> [SVGElement]
-tileQuasiStep tasks f | Map.null tasks = [unitCircleSVG [emptyStyle]]
-                      | otherwise = (f prepoly side) : (tileQuasiStep newtasks f)
-    where
-      ((pt@(x,y), (prepoly, n, side)), interimtasks) = Map.deleteFindMax tasks
-      poly = map (reflectPPoint1 pt) prepoly
-      news | n == 0 = []
-           | otherwise = [(poly, n-1, not side)]
-      newPts = filter (\(x1,y1) -> sqrt (x1^2+y1^2) < 0.999 && (x^2 + y^2 < x1^2 + y1^2))
-                 (nub (poly \\ [pt]))
-      newtasks = Map.union interimtasks (Map.fromList [(l, nw) | l <- newPts, nw <- news])
-
 
 blackStyle = SVGStyle [ SVGFill (SVGPColor (SVGColorHex "000")), 
                        SVGStroke (SVGPColor (SVGColorPercent 0 0 0)),
@@ -340,10 +295,70 @@ tileStepSVG poly False = SVGPath [whiteStyle] (pPolygonSVG poly)
 
 tileBlackSVG poly _ = SVGPath [blackStyle] (pPolygonSVG poly)
 
-schwarzInitMap :: Int -> Int -> Int -> Map PLine (PPolygon, Int, Bool)
-schwarzInitMap p q n = Map.fromList [(line, (poly, n, True)) | (poly, line, n) <- pln]
-    where 
-      pln = schwarzInit p q n
+tileEmptySVG poly _ = SVGPath [whiteStyle] (pPolygonSVG poly)
+
+
+
+
+adEpsilon = 1e-5 :: Double
+newtype ADouble = AD Double
+
+instance Show ADouble where
+    show (AD x) = show x
+
+instance Eq ADouble where
+    (AD x) == (AD y) = abs (x-y) < adEpsilon
+
+instance Ord ADouble where
+    compare x@(AD xx) y@(AD yy) | x == y = EQ
+                                | xx < yy = LT
+                                | xx > yy = GT
+
+type APoint = (ADouble, ADouble)
+
+pointToAPoint :: Point -> APoint
+pointToAPoint (x,y) = (AD x, AD y)
+
+apointToPoint :: APoint -> Point
+apointToPoint (AD x, AD y) = (x,y)
+
+-- tileStep :: Map PLine (PPolygon, Int, Bool) -> 
+--             (PPolygon -> Bool -> SVGElement) -> [SVGElement]
+
+tileStep :: (Seq (PLine, PPolygon, Int, Bool, APoint),  -- work task queue
+              Set APoint) ->                             -- seen centers
+             (PPolygon -> Bool -> SVGElement) ->         -- polygon printer
+             [SVGElement]
+tileStep (tasks,centers) f | Seq.null tasks = [unitCircleSVG [emptyStyle]]
+                           | otherwise = (f prepoly side):(tileStep (newtasks,newcenters) f)
+    where
+      (line, prepoly, n, side, center):<tasktail = Seq.viewl tasks
+      newcenter = reflectPPoint line (apointToPoint center)
+      poly = map (reflectPPoint line) prepoly
+      news | n == 0 = []
+           | otherwise = [(poly, n-1, not side)]
+      newedges = filter (\edge -> (pointToAPoint $ reflectPPoint edge newcenter) `Set.notMember` centers) 
+                        (edges (head poly) (tail poly))
+      newtasks = tasktail >< Seq.fromList [(e, p, m, s, pointToAPoint newcenter) | (p,m,s) <- news, e <- newedges]
+      newcenters = Set.insert (pointToAPoint newcenter) centers
+
+tileQuasiStep :: (Seq (PPoint, PPolygon, Int, Bool, APoint),
+                   Set APoint) ->
+                  (PPolygon -> Bool -> SVGElement) ->
+                  [SVGElement]
+tileQuasiStep (tasks,centers) f | Seq.null tasks = [unitCircleSVG [emptyStyle]]
+                                | otherwise = (f prepoly side) : (tileQuasiStep (newtasks,newcenters) f)
+
+    where
+      (pt, prepoly, n, side, center) :< tasktail = Seq.viewl tasks
+      newcenter = reflectPPoint1 pt (apointToPoint center)
+      poly = map (reflectPPoint1 pt) prepoly
+      news | n==0 = []
+           | otherwise = [(poly, n-1, not side)]
+      newPts = filter (\pt -> (pointToAPoint $ reflectPPoint1 pt newcenter) `Set.notMember` centers) (nub (poly \\ [pt]))
+      newtasks = tasktail >< Seq.fromList [(np, p, m, s, pointToAPoint newcenter) | (p,m,s) <- news, np <- newPts]
+      newcenters = Set.insert (pointToAPoint newcenter) centers
+
 
 schwarzInit :: Int -> Int -> Int -> [(PPolygon, PLine, Int)]
 schwarzInit p q n = [(poly, l, n) | l <- edges (head poly) (tail poly)]
@@ -355,19 +370,36 @@ schwarzInitQuasi p q n = [(poly, l, n) | l <- nub poly]
     where
       poly = schwarzQuasiPolygon p q
 
-schwarzInitQuasiMap :: Int -> Int -> Int -> Map PPoint (PPolygon, Int, Bool)
-schwarzInitQuasiMap p q n = Map.fromList [(pt, (poly, n, True)) | (poly, pt, n) <- pln]
-    where 
-      pln = schwarzInitQuasi p q n
+
+schwarzInitSeq :: Int -> Int -> Int -> (Seq (PLine, PPolygon, Int, Bool, APoint),Set APoint)
+schwarzInitSeq p q n = (Seq.fromList [(l,poly,n,True,a) | l <- edges (head poly) (tail poly)], 
+                        Set.singleton a)
+    where
+      poly = schwarzRegularPolygon p q
+      a = pointToAPoint (0,0)
+
+schwarzInitQuasiSeq :: Int -> Int -> Int -> (Seq (PPoint, PPolygon, Int, Bool, APoint),Set APoint)
+schwarzInitQuasiSeq p q n = (Seq.fromList [(l,poly,n,True,a) | l <- nub poly], 
+                             Set.singleton a)
+    where
+      poly = schwarzQuasiPolygon p q
+      a = pointToAPoint (0,0)
 
 tileSVG p q n = svgCenteredDocument [] 
-          ([SVGPath [blueStyle] (pPolygonSVG (schwarzRegularPolygon p q))] ++ 
-           (map (\lst -> SVGPath [emptyStyle] (pPolygonSVG lst))
-                (tilePolygonStep [] (schwarzInit p q n))) ++
-           [unitCircleSVG [emptyStyle]])
+                (tileStep (schwarzInitSeq p q n) tileEmptySVG) 
 
-tileAlternatingSVG p q n = svgCenteredDocument 
-                           [] 
-                           (tileStep (schwarzInitMap p q n) tileStepSVG)
+tileAlternatingSVG p q n = svgCenteredDocument [] 
+                           (tileStep (schwarzInitSeq p q n) tileStepSVG)
 
-testPoincare p q n = writeFile "poin.svg" (show (tileAlternatingSVG p q n))
+tileQuasiSVG p q n = svgCenteredDocument [] 
+                     (tileQuasiStep (schwarzInitQuasiSeq p q n) tileBlackSVG) 
+
+tileQuasiAlternatingSVG p q n = svgCenteredDocument [] 
+                                (tileQuasiStep (schwarzInitQuasiSeq p q n) tileBlackSVG)
+
+
+testPoincare p q n | even q = writeFile "poin.svg" (show (tileAlternatingSVG p q n))
+                   | odd q = writeFile "poin.svg" (show (tileSVG p q n))
+
+testQuasiPoincare p q n | even q = writeFile "poin.svg" (show (tileQuasiAlternatingSVG p q n))
+                        | odd q = writeFile "poin.svg" (show (tileQuasiSVG p q n))
